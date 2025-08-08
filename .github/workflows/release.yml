@@ -74,12 +74,7 @@ jobs:
               pnpm run release:dry
             else
               echo "手动触发 beta 版 Dry Run（预览模式）"
-              # 临时替换配置文件以支持从 feature/docker 分支发布
-              mv .releaserc .releaserc.backup
-              cp .releaserc.beta.json .releaserc
-              pnpm run release:dry
-              # 恢复原始配置文件
-              mv .releaserc.backup .releaserc
+              pnpm run release:dry:beta
             fi
           else
             if [ "${{ github.event.inputs.version_type }}" = "stable" ]; then
@@ -87,12 +82,7 @@ jobs:
               # pnpm run release
             else
               echo "手动触发 beta 版实际发布"
-              # 临时替换配置文件以支持从 feature/docker 分支发布
-              mv .releaserc .releaserc.backup
-              cp .releaserc.beta.json .releaserc
-              pnpm run release
-              # 恢复原始配置文件
-              mv .releaserc.backup .releaserc
+              pnpm run release:beta
             fi
           fi
 
