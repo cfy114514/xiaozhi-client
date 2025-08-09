@@ -1,28 +1,54 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import { RestartButton, type RestartStatus } from "./RestartButton";
+import { useWebSocket } from "@/hooks/useWebSocket";
 
 // Mock useWebSocket hook
 const mockRestartService = vi.fn();
-const mockRestartStatus: any = undefined;
+const mockRefreshConfig = vi.fn();
+const mockUpdateConfig = vi.fn();
+const mockRefreshStatus = vi.fn();
+const mockSetCustomWsUrl = vi.fn();
+const mockChangePort = vi.fn();
 
 vi.mock("@/hooks/useWebSocket", () => ({
-  useWebSocket: () => ({
-    restartService: mockRestartService,
-    restartStatus: mockRestartStatus,
-  }),
+  useWebSocket: vi.fn(),
 }));
 
 // Mock sonner toast
 vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
+    success: vi.fn(),
   },
 }));
 
 describe("RestartButton", () => {
+  const mockUseWebSocket = vi.mocked(useWebSocket);
+
+  // 创建完整的 mock 返回值
+  const createMockWebSocketReturn = (overrides = {}) => ({
+    connected: false,
+    config: null,
+    status: null,
+    updateConfig: mockUpdateConfig,
+    refreshStatus: mockRefreshStatus,
+    refreshConfig: mockRefreshConfig,
+    restartService: mockRestartService,
+    wsUrl: "ws://localhost:9999",
+    setCustomWsUrl: mockSetCustomWsUrl,
+    changePort: mockChangePort,
+    restartStatus: undefined,
+    ...overrides,
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRestartService.mockClear();
+    mockRefreshConfig.mockClear();
+
+    // 默认 mock 返回值
+    mockUseWebSocket.mockReturnValue(createMockWebSocketReturn());
   });
 
   it("should render with default props", () => {
@@ -201,5 +227,40 @@ describe("RestartButton", () => {
     fireEvent.click(button);
 
     expect(mockOnRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("should call refreshConfig when restart status becomes completed", () => {
+    const restartStatus: RestartStatus = {
+      status: "completed",
+      timestamp: Date.now(),
+    };
+
+    // 设置 mock 返回 completed 状态
+    mockUseWebSocket.mockReturnValue(
+      createMockWebSocketReturn({ restartStatus })
+    );
+
+    render(<RestartButton />);
+
+    // 验证 refreshConfig 被调用
+    expect(mockRefreshConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("should not call refreshConfig when restart status becomes failed", () => {
+    const restartStatus: RestartStatus = {
+      status: "failed",
+      error: "重启失败",
+      timestamp: Date.now(),
+    };
+
+    // 设置 mock 返回 failed 状态
+    mockUseWebSocket.mockReturnValue(
+      createMockWebSocketReturn({ restartStatus })
+    );
+
+    render(<RestartButton />);
+
+    // 验证 refreshConfig 没有被调用
+    expect(mockRefreshConfig).not.toHaveBeenCalled();
   });
 });

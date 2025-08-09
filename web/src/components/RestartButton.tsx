@@ -52,7 +52,7 @@ export function RestartButton({
   defaultText = "重启服务",
 }: RestartButtonProps) {
   const [isRestarting, setIsRestarting] = useState(false);
-  const { restartStatus, restartService } = useWebSocket();
+  const { restartStatus, restartService, refreshConfig } = useWebSocket();
 
   // 监听重启状态变化
   useEffect(() => {
@@ -61,11 +61,25 @@ export function RestartButton({
         restartStatus.status === "completed" ||
         restartStatus.status === "failed"
       ) {
+        if (restartStatus.status === "completed") {
+          toast.success("服务已重启");
+
+          // 重启成功后，重新获取配置信息以更新 MCP 服务工具列表
+          try {
+            console.log("[RestartButton] 重启成功，正在刷新配置信息...");
+            refreshConfig();
+          } catch (error) {
+            console.error("[RestartButton] 刷新配置失败:", error);
+            // 不显示错误提示，因为这是后台操作，不应该影响用户体验
+          }
+        } else {
+          toast.error("服务重启失败");
+        }
         // 重启完成或失败时，清除 loading 状态
         setIsRestarting(false);
       }
     }
-  }, [restartStatus]);
+  }, [restartStatus, refreshConfig]);
 
   const handleRestart = async () => {
     // if (!onRestart) return;

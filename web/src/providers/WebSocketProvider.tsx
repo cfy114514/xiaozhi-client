@@ -5,6 +5,7 @@ import type { AppConfig } from "../types";
 interface WebSocketContextType {
   updateConfig: (config: AppConfig) => Promise<void>;
   refreshStatus: () => void;
+  refreshConfig: () => void;
   restartService: () => Promise<void>;
   setCustomWsUrl: (url: string) => void;
   changePort: (newPort: number) => Promise<void>;
@@ -23,6 +24,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const contextValue: WebSocketContextType = {
     updateConfig: webSocketState.updateConfig,
     refreshStatus: webSocketState.refreshStatus,
+    refreshConfig: webSocketState.refreshConfig,
     restartService: webSocketState.restartService,
     setCustomWsUrl: webSocketState.setCustomWsUrl,
     changePort: webSocketState.changePort,

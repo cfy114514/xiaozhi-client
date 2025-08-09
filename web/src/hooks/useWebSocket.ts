@@ -256,6 +256,13 @@ export function useWebSocket() {
     }
   }, []);
 
+  const refreshConfig = useCallback(() => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      console.log("[WebSocket] 发送配置刷新请求");
+      socketRef.current.send(JSON.stringify({ type: "getConfig" }));
+    }
+  }, []);
+
   const restartService = useCallback((): Promise<void> => {
     return new Promise((resolve, reject) => {
       if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -488,6 +495,7 @@ export function useWebSocket() {
     ...state,
     updateConfig,
     refreshStatus,
+    refreshConfig,
     restartService,
     wsUrl,
     setCustomWsUrl,
