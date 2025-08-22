@@ -8,6 +8,11 @@ import {
   pollPortUntilAvailable,
 } from "../utils/portUtils";
 
+// 重连配置常量
+const RECONNECT_INTERVAL = 1000; // 重连间隔：1秒
+const MAX_RECONNECT_ATTEMPTS = 30; // 最大重连次数：30次（30秒）
+const CONNECTION_TIMEOUT = 5000; // 连接超时：5秒
+
 interface WebSocketState {
   connected: boolean;
   config: AppConfig | null;
@@ -256,27 +261,174 @@ export function useWebSocket() {
     }
   }, []);
 
-  const restartService = useCallback((): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
-        console.log("[WebSocket] 发送重启请求");
+  // 重连函数 - 与 test-websocket.js 中的实现保持一致
+  const attemptReconnect = useCallback(
+    (targetUrl: string): Promise<WebSocket> => {
+      console.log("[WebSocket] 🔄 开始重连流程...");
+      let reconnectAttempts = 0;
 
-        // 发送重启请求
-        socketRef.current.send(JSON.stringify({ type: "restartService" }));
+      return new Promise((resolve, reject) => {
+        const reconnectInterval = setInterval(async () => {
+          reconnectAttempts++;
+          console.log(
+            `[WebSocket] 🔄 正在尝试重连... 第 ${reconnectAttempts} 次`
+          );
 
-        // 由于服务重启会断开WebSocket连接，我们不能依赖WebSocket消息来确认重启状态
-        // 改为等待一段时间，让服务有足够时间重启
-        console.log("[WebSocket] 等待服务重启...");
+          if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            clearInterval(reconnectInterval);
+            console.error(
+              `[WebSocket] ❌ 重连失败：已达到最大重连次数 (${MAX_RECONNECT_ATTEMPTS})`
+            );
+            reject(
+              new Error(
+                `重连失败：已达到最大重连次数 (${MAX_RECONNECT_ATTEMPTS})`
+              )
+            );
+            return;
+          }
 
-        setTimeout(() => {
-          console.log("[WebSocket] 服务重启等待时间结束，假设重启完成");
-          resolve();
-        }, 5000); // 等待5秒，给服务足够的重启时间
-      } else {
-        reject(new Error("WebSocket 未连接"));
+          try {
+            const newWs = new WebSocket(targetUrl);
+
+            // 设置连接超时
+            const connectionTimeout = setTimeout(() => {
+              newWs.close();
+              console.warn(`[WebSocket] ⚠️  第 ${reconnectAttempts} 次重连超时`);
+            }, CONNECTION_TIMEOUT);
+
+            newWs.onopen = () => {
+              clearTimeout(connectionTimeout);
+              clearInterval(reconnectInterval);
+              console.log("[WebSocket] ✅ 重启成功，连接已恢复");
+
+              // 设置新连接的事件处理
+              setupWebSocketHandlers(newWs);
+
+              resolve(newWs);
+            };
+
+            newWs.onerror = (error) => {
+              clearTimeout(connectionTimeout);
+              console.warn(
+                `[WebSocket] ⚠️  第 ${reconnectAttempts} 次重连失败:`,
+                error
+              );
+              // 继续尝试，不要reject
+            };
+
+            newWs.onclose = () => {
+              clearTimeout(connectionTimeout);
+              // 连接被关闭，继续尝试
+            };
+          } catch (error) {
+            console.warn(
+              `[WebSocket] ⚠️  第 ${reconnectAttempts} 次重连出现异常:`,
+              error
+            );
+            // 继续尝试，不要reject
+          }
+        }, RECONNECT_INTERVAL);
+      });
+    },
+    []
+  );
+
+  // WebSocket 事件处理设置函数
+  const setupWebSocketHandlers = useCallback(
+    (ws: WebSocket) => {
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        console.log("[WebSocket] 收到消息:", message);
+
+        switch (message.type) {
+          case "config":
+          case "configUpdate":
+            console.log("[WebSocket] 处理 config 更新:", message.data);
+            setState((prev) => ({ ...prev, config: message.data }));
+            syncToStore("config", message.data);
+            break;
+          case "status":
+          case "statusUpdate": {
+            console.log("[WebSocket] 处理 status 更新:", message.data);
+            const statusData = message.data;
+            if (statusData && typeof statusData === "object") {
+              setState((prev) => ({ ...prev, status: statusData }));
+              setTimeout(() => {
+                syncToStore("status", statusData);
+              }, 0);
+            } else {
+              console.warn("[WebSocket] 收到无效的 status 数据:", statusData);
+            }
+            break;
+          }
+          case "restartStatus":
+            console.log("[WebSocket] 处理 restartStatus 更新:", message.data);
+            setState((prev) => ({ ...prev, restartStatus: message.data }));
+            syncToStore("restartStatus", message.data);
+            break;
+          default:
+            console.log("[WebSocket] 未处理的消息类型:", message.type);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("[WebSocket] 连接已断开");
+        setState((prev) => ({ ...prev, connected: false }));
+        syncToStore("connected", false);
+        stopStatusCheck();
+      };
+
+      ws.onerror = (error) => {
+        console.error("[WebSocket] WebSocket error:", error);
+      };
+
+      // 更新连接状态
+      setState((prev) => ({ ...prev, connected: true }));
+      syncToStore("connected", true);
+
+      // 发送初始请求
+      console.log("[WebSocket] 发送初始请求: getConfig, getStatus");
+      ws.send(JSON.stringify({ type: "getConfig" }));
+      ws.send(JSON.stringify({ type: "getStatus" }));
+
+      // 开始定期查询状态
+      startStatusCheck(ws);
+    },
+    [syncToStore, stopStatusCheck, startStatusCheck]
+  );
+
+  const restartService = useCallback(async (): Promise<void> => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      console.log("[WebSocket] 发送重启请求");
+
+      // 发送重启请求
+      socketRef.current.send(JSON.stringify({ type: "restartService" }));
+
+      // 立即开始重连流程 - 与 test-websocket.js 保持一致
+      console.log("[WebSocket] ⏳ 等待服务重启...");
+      await new Promise((resolve) => setTimeout(resolve, 2000)); // 等待2秒让服务有时间重启
+
+      try {
+        // 尝试重新建立连接
+        const newWs = await attemptReconnect(wsUrl);
+
+        // 更新 socketRef 为新的连接
+        socketRef.current = newWs;
+
+        // 重连成功后，可以继续进行其他操作
+        console.log("[WebSocket] 🎉 重连测试完成，服务已成功重启并重新连接");
+
+        // 可选：发送一个测试消息验证连接
+        console.log("[WebSocket] 🔍 验证重连后的连接状态...");
+        newWs.send(JSON.stringify({ type: "getConfig" }));
+      } catch (reconnectError) {
+        console.error("[WebSocket] 💥 重连失败", reconnectError);
+        throw reconnectError;
       }
-    });
-  }, []);
+    } else {
+      throw new Error("WebSocket 未连接");
+    }
+  }, [attemptReconnect, wsUrl]);
 
   // 保存自定义WebSocket地址
   const setCustomWsUrl = useCallback((url: string) => {
