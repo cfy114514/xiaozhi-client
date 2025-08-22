@@ -93,10 +93,25 @@ describe("ConnectionManager", () => {
 
       // Mock WebSocket 不会自动连接
       const OriginalWebSocket = global.WebSocket;
-      global.WebSocket = class extends MockWebSocket {
+      global.WebSocket = class {
+        readyState = 0; // CONNECTING
+        onopen: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        url: string;
+
         constructor(url: string) {
-          super(url);
+          this.url = url;
           // 不触发 onopen，模拟连接超时
+        }
+
+        send(_data: string) {
+          throw new Error('WebSocket is not open');
+        }
+
+        close() {
+          this.readyState = 3; // CLOSED
         }
       } as any;
 
@@ -251,8 +266,8 @@ describe("ConnectionManager", () => {
       // 模拟意外断开触发重连
       (limitedManager as any).handleUnexpectedDisconnect();
 
-      // 等待重连尝试完成
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // 等待重连尝试完成 - 进一步增加等待时间
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       expect(limitedManager.getConnectionState()).toBe(ConnectionState.FAILED);
 

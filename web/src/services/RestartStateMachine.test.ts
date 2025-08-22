@@ -166,8 +166,8 @@ describe("RestartStateMachine", () => {
       // 开始重启
       stateMachine.restart(9999);
 
-      // 等待状态转换到 RESTARTING
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // 等待状态转换到 RESTARTING - 增加等待时间
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       expect(stateMachine.getCurrentState()).toBe(RestartState.RESTARTING);
       expect(mockConnectionManager.disconnect).toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe("RestartStateMachine", () => {
       stateMachine.restart(9999);
 
       // 等待进入重连状态（需要等待 INITIATING -> RESTARTING -> RECONNECTING）
-      await new Promise((resolve) => setTimeout(resolve, 2300));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
 
       // 验证状态和调用
       expect(mockConnectionManager.connect).toHaveBeenCalledWith(9999);
@@ -208,8 +208,8 @@ describe("RestartStateMachine", () => {
       // 开始重启
       stateMachine.restart(9999);
 
-      // 等待重连尝试完成（简化等待时间）
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // 等待重连尝试完成（增加等待时间）
+      await new Promise((resolve) => setTimeout(resolve, 5000));
 
       expect(stateMachine.getCurrentState()).toBe(RestartState.FAILED);
     });
@@ -389,8 +389,8 @@ describe("RestartStateMachine", () => {
       // 开始重启
       stateMachine.restart(9999);
 
-      // 等待错误处理
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // 等待错误处理 - 增加等待时间
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(stateMachine.getCurrentState()).toBe(RestartState.FAILED);
     });

@@ -260,7 +260,9 @@ export class RestartStateMachine {
       );
 
       // 转换到重启状态
-      await this.transition(RestartState.RESTARTING);
+      setTimeout(async () => {
+        await this.transition(RestartState.RESTARTING);
+      }, 10);
     } catch (error) {
       throw new Error(
         `发送重启请求失败: ${error instanceof Error ? error.message : String(error)}`
