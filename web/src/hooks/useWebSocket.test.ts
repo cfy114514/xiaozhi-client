@@ -67,7 +67,6 @@ global.WebSocket = class extends OriginalMockWebSocket {
 };
 
 describe("useWebSocket Hook 测试", () => {
-  let mockWebSocket: MockWebSocket;
   let messageHandlers: Map<string, (message: any) => void>;
 
   beforeEach(() => {
