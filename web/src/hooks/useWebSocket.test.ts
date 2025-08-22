@@ -83,9 +83,11 @@ describe("useWebSocket Hook 测试", () => {
     mockSendMessage.mockResolvedValue(undefined);
     mockIsConnected.mockReturnValue(true);
     mockDestroy.mockImplementation(() => {});
-    mockAddMessageHandler.mockImplementation((type: string, handler: (message: any) => void) => {
-      messageHandlers.set(type, handler);
-    });
+    mockAddMessageHandler.mockImplementation(
+      (type: string, handler: (message: any) => void) => {
+        messageHandlers.set(type, handler);
+      }
+    );
 
     // Clear localStorage
     localStorage.clear();
@@ -118,8 +120,12 @@ describe("useWebSocket Hook 测试", () => {
 
     // 验证 ConnectionManager 的方法被调用
     expect(mockConnect).toHaveBeenCalled();
-    expect(mockSendMessage).toHaveBeenCalledWith(JSON.stringify({ type: "getConfig" }));
-    expect(mockSendMessage).toHaveBeenCalledWith(JSON.stringify({ type: "getStatus" }));
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      JSON.stringify({ type: "getConfig" })
+    );
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      JSON.stringify({ type: "getStatus" })
+    );
     expect(result.current.connected).toBe(true);
   });
 

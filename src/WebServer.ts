@@ -44,6 +44,7 @@ export class WebServer {
   private proxyMCPServer: ProxyMCPServer | undefined; // 保留用于向后兼容
   private xiaozhiConnectionManager: XiaozhiConnectionManager | undefined;
   private mcpServiceManager: MCPServiceManager | undefined;
+  private serverStartTime: number = Date.now(); // 服务器启动时间
 
   constructor(port?: number) {
     // 端口配置
@@ -356,6 +357,75 @@ export class WebServer {
       });
     });
 
+    // 健康检查端点
+    this.app?.get("/api/health", async (c) => {
+      try {
+        const healthStatus = await this.getServiceHealth();
+        return c.json({
+          status: "healthy",
+          timestamp: Date.now(),
+          uptime: process.uptime(),
+          port: this.port,
+          version: process.env.npm_package_version || "1.0.0",
+          serverStartTime: this.serverStartTime,
+          ...healthStatus,
+        });
+      } catch (error) {
+        this.logger.error("健康检查失败:", error);
+        return c.json(
+          {
+            status: "unhealthy",
+            error: error instanceof Error ? error.message : String(error),
+            timestamp: Date.now(),
+            port: this.port,
+            serverStartTime: this.serverStartTime,
+          },
+          503
+        );
+      }
+    });
+
+    // 重启 API 端点
+    this.app?.post("/api/restart", async (c) => {
+      try {
+        const body = await c.req.json().catch(() => ({}));
+        const { targetPort, restartId } = body;
+
+        this.logger.info(`收到重启请求: ${JSON.stringify({ targetPort, restartId })}`);
+
+        // 生成重启 ID（如果没有提供）
+        const actualRestartId = restartId || this.generateRestartId();
+        const startTimestamp = Date.now();
+
+        // 广播重启开始状态
+        this.broadcastRestartStatus("restarting", undefined, {
+          restartId: actualRestartId,
+          startTimestamp,
+          targetPort,
+          currentStep: 1,
+          totalSteps: 5,
+          message: "正在准备重启服务...",
+        });
+
+        // 异步执行重启
+        this.executeRestart(actualRestartId, startTimestamp, targetPort);
+
+        return c.json({
+          success: true,
+          restartId: actualRestartId,
+          message: "重启请求已接收",
+        });
+      } catch (error) {
+        this.logger.error("处理重启请求失败:", error);
+        return c.json(
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+          500
+        );
+      }
+    });
+
     // 处理未知的 API 路由
     this.app?.all("/api/*", async (c) => {
       return c.text("Not Found", 404);
@@ -526,32 +596,65 @@ export class WebServer {
         break;
       }
 
-      case "restartService":
+      case "restartService": {
         // 处理手动重启请求
-        this.logger.info("收到手动重启服务请求");
-        this.broadcastRestartStatus("restarting");
+        const { targetPort, restartId } = data;
+        this.logger.info(`收到 WebSocket 重启请求: ${JSON.stringify({ targetPort, restartId })}`);
 
-        // 延迟执行重启
-        setTimeout(async () => {
-          try {
-            await this.restartService();
-            // 服务重启需要一些时间，延迟发送成功状态
-            setTimeout(() => {
-              this.broadcastRestartStatus("completed");
-            }, 5000);
-          } catch (error) {
-            this.logger.error(
-              `手动重启失败: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            );
-            this.broadcastRestartStatus(
-              "failed",
-              error instanceof Error ? error.message : "未知错误"
-            );
-          }
-        }, 500);
+        // 生成重启 ID（如果没有提供）
+        const actualRestartId = restartId || this.generateRestartId();
+        const startTimestamp = Date.now();
+
+        // 异步执行重启
+        this.executeRestart(actualRestartId, startTimestamp, targetPort);
+
+        // 立即响应确认消息
+        ws.send(JSON.stringify({
+          type: "restartAck",
+          data: {
+            restartId: actualRestartId,
+            message: "重启请求已接收",
+          },
+        }));
         break;
+      }
+
+      case "restartVerification": {
+        // 处理重启验证请求
+        const { timestamp } = data;
+
+        try {
+          // 验证服务确实已重启（通过启动时间比较）
+          const isRestarted = this.serverStartTime > timestamp;
+
+          // 检查服务健康状态
+          const healthStatus = await this.getServiceHealth();
+          const isHealthy = healthStatus.webServer && healthStatus.websocket;
+
+          ws.send(JSON.stringify({
+            type: "restartVerificationResponse",
+            data: {
+              restarted: isRestarted,
+              healthy: isHealthy,
+              timestamp: Date.now(),
+              serverStartTime: this.serverStartTime,
+              healthStatus,
+            },
+          }));
+        } catch (error) {
+          ws.send(JSON.stringify({
+            type: "restartVerificationResponse",
+            data: {
+              restarted: false,
+              healthy: false,
+              error: error instanceof Error ? error.message : String(error),
+              timestamp: Date.now(),
+              serverStartTime: this.serverStartTime,
+            },
+          }));
+        }
+        break;
+      }
     }
   }
 
@@ -580,7 +683,8 @@ export class WebServer {
 
   private broadcastRestartStatus(
     status: "restarting" | "completed" | "failed",
-    error?: string
+    error?: string,
+    additionalData?: any
   ) {
     if (!this.wss) return;
 
@@ -590,6 +694,7 @@ export class WebServer {
         status,
         error,
         timestamp: Date.now(),
+        ...additionalData,
       },
     });
     for (const client of this.wss.clients) {
@@ -597,6 +702,174 @@ export class WebServer {
         client.send(message);
       }
     }
+  }
+
+  /**
+   * 获取服务健康状态
+   */
+  private async getServiceHealth(): Promise<any> {
+    const health = {
+      webServer: true,
+      websocket: !!this.wss,
+      mcpConnection: false,
+      services: {} as any,
+    };
+
+    // 检查 MCP 连接状态
+    if (this.xiaozhiConnectionManager) {
+      const connections = this.xiaozhiConnectionManager.getHealthyConnections();
+      health.mcpConnection = connections.length > 0;
+      health.services.xiaozhiConnections = {
+        healthy: connections.length,
+        total: this.xiaozhiConnectionManager.getConnectionStatus().length,
+      };
+    } else if (this.proxyMCPServer) {
+      const status = this.proxyMCPServer.getStatus();
+      health.mcpConnection = status.connected;
+      health.services.proxyMCP = {
+        connected: status.connected,
+      };
+    }
+
+    // 检查 MCP 服务管理器状态
+    if (this.mcpServiceManager) {
+      const services = this.mcpServiceManager.getAllServices();
+      health.services.mcpServices = {
+        total: services.size,
+        running: Array.from(services.values()).filter(s => s.isConnected()).length,
+      };
+    }
+
+    return health;
+  }
+
+  /**
+   * 生成重启 ID
+   */
+  private generateRestartId(): string {
+    return `restart_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * 异步执行重启流程
+   */
+  private async executeRestart(
+    restartId: string,
+    startTimestamp: number,
+    targetPort?: number
+  ): Promise<void> {
+    try {
+      // 步骤 1: 准备重启
+      this.broadcastRestartStatus("restarting", undefined, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 1,
+        totalSteps: 5,
+        message: "正在准备重启服务...",
+      });
+
+      await this.delay(500); // 短暂延迟确保消息发送
+
+      // 步骤 2: 执行重启命令
+      this.broadcastRestartStatus("restarting", undefined, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 2,
+        totalSteps: 5,
+        message: "正在执行重启命令...",
+      });
+
+      await this.restartService();
+
+      // 步骤 3: 等待服务重启
+      this.broadcastRestartStatus("restarting", undefined, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 3,
+        totalSteps: 5,
+        message: "等待服务重启...",
+      });
+
+      await this.delay(2000); // 等待服务重启
+
+      // 步骤 4: 验证服务状态
+      this.broadcastRestartStatus("restarting", undefined, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 4,
+        totalSteps: 5,
+        message: "验证服务状态...",
+      });
+
+      const isHealthy = await this.verifyServiceRestart(startTimestamp, targetPort);
+
+      if (!isHealthy) {
+        throw new Error("服务重启后健康检查失败");
+      }
+
+      // 步骤 5: 重启完成
+      this.broadcastRestartStatus("completed", undefined, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 5,
+        totalSteps: 5,
+        message: "重启完成",
+        completedAt: Date.now(),
+      });
+
+      this.logger.info(`服务重启完成: ${restartId}`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`服务重启失败 (${restartId}):`, error);
+
+      this.broadcastRestartStatus("failed", errorMessage, {
+        restartId,
+        startTimestamp,
+        targetPort,
+        currentStep: 0,
+        totalSteps: 5,
+        message: `重启失败: ${errorMessage}`,
+        failedAt: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * 验证服务重启
+   */
+  private async verifyServiceRestart(
+    startTimestamp: number,
+    targetPort?: number
+  ): Promise<boolean> {
+    try {
+      // 检查服务器启动时间是否晚于重启开始时间
+      const isRestarted = this.serverStartTime > startTimestamp;
+
+      // 检查服务健康状态
+      const healthStatus = await this.getServiceHealth();
+      const isHealthy = healthStatus.webServer && healthStatus.websocket;
+
+      this.logger.info(
+        `重启验证结果: 重启=${isRestarted}, 健康=${isHealthy}, 服务器启动时间=${this.serverStartTime}, 重启开始时间=${startTimestamp}`
+      );
+
+      return isRestarted && isHealthy;
+    } catch (error) {
+      this.logger.error("重启验证失败:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 延迟工具方法
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private broadcastStatusUpdate() {
