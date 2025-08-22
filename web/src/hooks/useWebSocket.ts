@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConnectionManager } from "../services/ConnectionManager";
 import { useWebSocketActions, useWebSocketStore } from "../stores/websocket";
 import type { AppConfig, ClientStatus } from "../types";
 import {
@@ -25,12 +26,20 @@ export function useWebSocket() {
     config: null,
     status: null,
   });
-  const socketRef = useRef<WebSocket | null>(null);
   const [wsUrl, setWsUrl] = useState<string>("");
   const statusCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // 获取 zustand store 的 actions
   const storeActions = useWebSocketActions();
+
+  // 创建 ConnectionManager 实例
+  const connectionManager = useMemo(() => {
+    return new ConnectionManager({
+      connectTimeout: 10000,
+      maxReconnectAttempts: 5,
+      reconnectInterval: 2000,
+    });
+  }, []);
 
   // 同步数据到 store 的辅助函数
   const syncToStore = useCallback(
@@ -110,26 +119,29 @@ export function useWebSocket() {
     }
   }, []);
 
-  const startStatusCheck = useCallback(
-    (ws: WebSocket) => {
-      // 清除之前的定时器
-      stopStatusCheck();
+  const startStatusCheck = useCallback(() => {
+    // 清除之前的定时器
+    stopStatusCheck();
 
-      // 使用固定间隔的定时器
-      const checkStatus = () => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "getStatus" }));
+    // 使用固定间隔的定时器
+    const checkStatus = async () => {
+      if (connectionManager.isConnected()) {
+        try {
+          await connectionManager.sendMessage(
+            JSON.stringify({ type: "getStatus" })
+          );
+        } catch (error) {
+          console.error("[WebSocket] 状态检查失败:", error);
         }
-      };
+      }
+    };
 
-      // 立即执行一次检查
-      checkStatus();
+    // 立即执行一次检查
+    checkStatus();
 
-      // 每秒检查一次状态
-      statusCheckIntervalRef.current = setInterval(checkStatus, 1000);
-    },
-    [stopStatusCheck]
-  );
+    // 每秒检查一次状态
+    statusCheckIntervalRef.current = setInterval(checkStatus, 1000);
+  }, [stopStatusCheck, connectionManager]);
 
   useEffect(() => {
     const url = getWebSocketUrl();
@@ -137,25 +149,38 @@ export function useWebSocket() {
     // 同步 URL 到 store
     syncToStore("wsUrl", url);
 
-    const ws = new WebSocket(url);
+    // 使用 ConnectionManager 建立连接
+    const port = extractPortFromUrl(url) || 9999;
 
-    ws.onopen = () => {
-      console.log(`[WebSocket] 连接已建立，URL: ${url}`);
-      const newState = { connected: true };
-      setState((prev) => ({ ...prev, ...newState }));
-      // 同步连接状态到 store
-      syncToStore("connected", true);
+    const connectToServer = async () => {
+      try {
+        await connectionManager.connect(port);
+        console.log(`[WebSocket] 连接已建立，URL: ${url}`);
 
-      console.log("[WebSocket] 发送初始请求: getConfig, getStatus");
-      ws.send(JSON.stringify({ type: "getConfig" }));
-      ws.send(JSON.stringify({ type: "getStatus" }));
+        const newState = { connected: true };
+        setState((prev) => ({ ...prev, ...newState }));
+        // 同步连接状态到 store
+        syncToStore("connected", true);
 
-      // 开始定期查询状态
-      startStatusCheck(ws);
+        console.log("[WebSocket] 发送初始请求: getConfig, getStatus");
+        await connectionManager.sendMessage(
+          JSON.stringify({ type: "getConfig" })
+        );
+        await connectionManager.sendMessage(
+          JSON.stringify({ type: "getStatus" })
+        );
+
+        // 开始定期查询状态
+        startStatusCheck();
+      } catch (error) {
+        console.error("[WebSocket] 连接失败:", error);
+        setState((prev) => ({ ...prev, connected: false }));
+        syncToStore("connected", false);
+      }
     };
 
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
+    // 设置消息处理器
+    const handleMessage = (message: any) => {
       console.log("[WebSocket] 收到消息:", message);
 
       switch (message.type) {
@@ -193,30 +218,31 @@ export function useWebSocket() {
       }
     };
 
-    ws.onclose = () => {
-      console.log("[WebSocket] 连接已断开");
-      setState((prev) => ({ ...prev, connected: false }));
-      // 同步断开连接状态到 store
-      syncToStore("connected", false);
-      stopStatusCheck();
-    };
+    // 为不同类型的消息添加处理器
+    connectionManager.addMessageHandler("config", handleMessage);
+    connectionManager.addMessageHandler("configUpdate", handleMessage);
+    connectionManager.addMessageHandler("status", handleMessage);
+    connectionManager.addMessageHandler("statusUpdate", handleMessage);
+    connectionManager.addMessageHandler("restartStatus", handleMessage);
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-
-    socketRef.current = ws;
+    connectToServer();
 
     return () => {
       stopStatusCheck();
-      ws.close();
+      connectionManager.destroy();
     };
-  }, [getWebSocketUrl, startStatusCheck, stopStatusCheck, syncToStore]);
+  }, [
+    getWebSocketUrl,
+    startStatusCheck,
+    stopStatusCheck,
+    syncToStore,
+    connectionManager,
+  ]);
 
   const updateConfig = useCallback(
     (config: AppConfig): Promise<void> => {
       return new Promise((resolve, reject) => {
-        if (socketRef.current?.readyState === WebSocket.OPEN) {
+        if (connectionManager.isConnected()) {
           // 先通过 HTTP API 更新
           const apiUrl = `${wsUrl.replace(
             /^ws(s)?:\/\//,
@@ -229,12 +255,16 @@ export function useWebSocket() {
           })
             .then((response) => {
               if (response.ok) {
-                return response.json().then(() => {
+                return response.json().then(async () => {
                   // 通过 WebSocket 通知配置更新
-                  socketRef.current?.send(
-                    JSON.stringify({ type: "updateConfig", config })
-                  );
-                  resolve();
+                  try {
+                    await connectionManager.sendMessage(
+                      JSON.stringify({ type: "updateConfig", config })
+                    );
+                    resolve();
+                  } catch (error) {
+                    reject(error);
+                  }
                 });
               }
               return response.text().then((text) => {
@@ -247,36 +277,45 @@ export function useWebSocket() {
         }
       });
     },
-    [wsUrl]
+    [wsUrl, connectionManager]
   );
 
-  const refreshStatus = useCallback(() => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "getStatus" }));
+  const refreshStatus = useCallback(async () => {
+    if (connectionManager.isConnected()) {
+      try {
+        await connectionManager.sendMessage(
+          JSON.stringify({ type: "getStatus" })
+        );
+      } catch (error) {
+        console.error("[WebSocket] 刷新状态失败:", error);
+      }
     }
-  }, []);
+  }, [connectionManager]);
 
   const restartService = useCallback((): Promise<void> => {
     return new Promise((resolve, reject) => {
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
+      if (connectionManager.isConnected()) {
         console.log("[WebSocket] 发送重启请求");
 
         // 发送重启请求
-        socketRef.current.send(JSON.stringify({ type: "restartService" }));
+        connectionManager
+          .sendMessage(JSON.stringify({ type: "restartService" }))
+          .then(() => {
+            // 由于服务重启会断开WebSocket连接，我们不能依赖WebSocket消息来确认重启状态
+            // 改为等待一段时间，让服务有足够时间重启
+            console.log("[WebSocket] 等待服务重启...");
 
-        // 由于服务重启会断开WebSocket连接，我们不能依赖WebSocket消息来确认重启状态
-        // 改为等待一段时间，让服务有足够时间重启
-        console.log("[WebSocket] 等待服务重启...");
-
-        setTimeout(() => {
-          console.log("[WebSocket] 服务重启等待时间结束，假设重启完成");
-          resolve();
-        }, 5000); // 等待5秒，给服务足够的重启时间
+            setTimeout(() => {
+              console.log("[WebSocket] 服务重启等待时间结束，假设重启完成");
+              resolve();
+            }, 5000); // 等待5秒，给服务足够的重启时间
+          })
+          .catch(reject);
       } else {
         reject(new Error("WebSocket 未连接"));
       }
     });
-  }, []);
+  }, [connectionManager]);
 
   // 保存自定义WebSocket地址
   const setCustomWsUrl = useCallback((url: string) => {

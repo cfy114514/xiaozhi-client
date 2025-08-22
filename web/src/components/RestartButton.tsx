@@ -1,26 +1,21 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Progress } from "@/components/ui/progress";
+import { useRestartService } from "@/hooks/useRestartService";
+import { RestartState } from "@/services/RestartStateMachine";
+import { AlertCircle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-
-/**
- * 重启状态接口
- */
-export interface RestartStatus {
-  status: "restarting" | "completed" | "failed";
-  error?: string;
-  timestamp: number;
-}
 
 /**
  * RestartButton 组件属性接口
  */
 export interface RestartButtonProps {
-  /** 重启回调函数 */
-  onRestart?: () => Promise<void> | void;
-  /** 重启状态 */
-  restartStatus?: RestartStatus;
+  /** 当前服务端口 */
+  currentPort: number;
+  /** 目标端口（可选，用于端口变更重启） */
+  targetPort?: number;
+  /** 重启完成回调函数 */
+  onRestartComplete?: () => void;
   /** 是否禁用按钮 */
   disabled?: boolean;
   /** 按钮样式变体 */
@@ -33,72 +28,97 @@ export interface RestartButtonProps {
     | "link";
   /** 自定义样式类 */
   className?: string;
-  /** 重启中的文本 */
-  restartingText?: string;
-  /** 默认文本 */
-  defaultText?: string;
+  /** 是否显示进度条 */
+  showProgress?: boolean;
+  /** 是否显示错误信息 */
+  showError?: boolean;
 }
 
 /**
- * 独立的重启按钮组件
- * 基于 ConfigEditor.tsx 中的重启服务功能实现
+ * 重启按钮组件
+ * 集成新的状态机和连接管理器，提供完整的重启流程管理
  */
 export function RestartButton({
-  onRestart,
+  currentPort,
+  targetPort,
+  onRestartComplete,
   disabled = false,
   variant = "outline",
   className = "",
-  restartingText = "重启中...",
-  defaultText = "重启服务",
+  showProgress = true,
+  showError = true,
 }: RestartButtonProps) {
-  const [isRestarting, setIsRestarting] = useState(false);
-  const { restartStatus, restartService } = useWebSocket();
+  const { restart, state, progress, error, isRestarting } = useRestartService();
 
-  // 监听重启状态变化
-  useEffect(() => {
-    if (restartStatus) {
-      if (
-        restartStatus.status === "completed" ||
-        restartStatus.status === "failed"
-      ) {
-        // 重启完成或失败时，清除 loading 状态
-        setIsRestarting(false);
-      }
-    }
-  }, [restartStatus]);
-
+  // 处理重启操作
   const handleRestart = async () => {
-    // if (!onRestart) return;
     if (isRestarting) {
       return;
     }
-    restartService();
 
-    setIsRestarting(true);
     try {
-      if (onRestart) {
-        await onRestart();
-      }
-      // 成功时不再立即清除 loading 状态，等待 restartStatus 更新
+      await restart(currentPort, targetPort);
+      onRestartComplete?.();
+      toast.success("服务重启成功");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "重启服务时发生错误"
-      );
-      // 错误时立即清除 loading 状态
-      setIsRestarting(false);
+      const errorMessage =
+        error instanceof Error ? error.message : "重启服务失败";
+      toast.error(`重启失败: ${errorMessage}`);
     }
   };
 
   return (
-    <Button
-      type="button"
-      onClick={handleRestart}
-      variant={variant}
-      disabled={isRestarting || disabled}
-      className={`flex items-center gap-2 ${className}`}
-    >
-      <RefreshCw className={`h-4 w-4 ${isRestarting ? "animate-spin" : ""}`} />
-      {isRestarting ? restartingText : defaultText}
-    </Button>
+    <div className="flex flex-col gap-2">
+      <Button
+        type="button"
+        onClick={handleRestart}
+        variant={variant}
+        disabled={isRestarting || disabled}
+        className={`flex items-center gap-2 ${className}`}
+      >
+        <RefreshCw
+          className={`h-4 w-4 ${isRestarting ? "animate-spin" : ""}`}
+        />
+        <span>{getStateDisplayText(state)}</span>
+      </Button>
+
+      {showProgress && progress && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Progress value={progress.percentage} className="flex-1" />
+          <span>{progress.message}</span>
+        </div>
+      )}
+
+      {showError && error && (
+        <Alert variant="destructive" className="text-sm">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   );
+}
+
+/**
+ * 根据重启状态获取显示文本
+ */
+function getStateDisplayText(state: RestartState): string {
+  switch (state) {
+    case RestartState.IDLE:
+      return "重启服务";
+    case RestartState.INITIATING:
+      return "准备重启...";
+    case RestartState.RESTARTING:
+      return "正在重启...";
+    case RestartState.RECONNECTING:
+      return "重新连接...";
+    case RestartState.VERIFYING:
+      return "验证服务...";
+    case RestartState.COMPLETED:
+      return "重启完成";
+    case RestartState.FAILED:
+      return "重启失败";
+    default:
+      return "重启服务";
+  }
 }

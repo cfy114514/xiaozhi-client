@@ -249,7 +249,9 @@ export default function SettingsPage() {
                       >
                         {isLoading ? "保存中..." : "保存"}
                       </Button>
-                      <RestartButton />
+                      <RestartButton
+                        currentPort={config?.webUI?.port || 9999}
+                      />
                     </div>
                   </div>
                 </form>

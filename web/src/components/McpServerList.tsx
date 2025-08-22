@@ -268,7 +268,7 @@ export function McpServerList({ updateConfig }: McpServerListProps) {
         <div className="transition-all duration-200 gap-4 flex flex-col col-span-2">
           <div className="flex items-center gap-2">
             <AddMcpServerButton />
-            <RestartButton />
+            <RestartButton currentPort={config?.webUI?.port || 9999} />
           </div>
           {Object.entries(mcpServers || {}).map(
             ([mcpServerName, mcpServer]) => (
