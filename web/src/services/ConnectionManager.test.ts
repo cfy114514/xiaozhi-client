@@ -107,7 +107,7 @@ describe("ConnectionManager", () => {
         }
 
         send(_data: string) {
-          throw new Error('WebSocket is not open');
+          throw new Error("WebSocket is not open");
         }
 
         close() {

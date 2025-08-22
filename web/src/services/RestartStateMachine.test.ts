@@ -5,10 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionManager } from "./ConnectionManager";
 import type { HealthChecker } from "./HealthChecker";
-import {
-  RestartState,
-  RestartStateMachine,
-} from "./RestartStateMachine";
+import { RestartState, RestartStateMachine } from "./RestartStateMachine";
 
 // Mock 连接管理器
 const mockConnectionManager: ConnectionManager = {
