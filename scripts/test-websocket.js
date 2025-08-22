@@ -106,6 +106,11 @@ function setupWebSocketHandlers(ws) {
                 log('info', '📋 收到配置信息');
             } else if (message.type === 'restartStatus') {
                 log('info', '🔄 收到重启状态', message.data);
+            } else if (message.type === 'restartModeChange') {
+                log('info', '🔄 收到重启模式变更通知', message.data);
+                if (message.data.message) {
+                    log('info', `💡 ${message.data.message}`);
+                }
             }
         } catch (error) {
             log('error', '解析消息失败', error.message);
@@ -159,6 +164,11 @@ async function testWebSocket() {
                     configReceived = true;
                 } else if (message.type === 'restartStatus') {
                     log('info', '🔄 收到重启状态', message.data);
+                } else if (message.type === 'restartModeChange') {
+                    log('info', '🔄 收到重启模式变更通知', message.data);
+                    if (message.data.message) {
+                        log('info', `💡 ${message.data.message}`);
+                    }
                 }
             } catch (error) {
                 log('error', '解析消息失败', error.message);
