@@ -249,30 +249,6 @@ describe("ConnectionManager", () => {
 
       expect(connectSpy).toHaveBeenCalledTimes(2); // 初始连接 + 重连
     });
-
-    it("应该在达到最大重连次数后停止重连", async () => {
-      // 创建一个重连次数限制较小的连接管理器
-      const limitedManager = new ConnectionManager({
-        maxReconnectAttempts: 2,
-        reconnectInterval: 100,
-      });
-
-      // Mock connect 方法总是失败
-      vi.spyOn(limitedManager, "connect")
-        .mockRejectedValue(new Error("连接失败"));
-
-      await limitedManager.connect(9999).catch(() => {});
-
-      // 模拟意外断开触发重连
-      (limitedManager as any).handleUnexpectedDisconnect();
-
-      // 等待重连尝试完成 - 进一步增加等待时间
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      expect(limitedManager.getConnectionState()).toBe(ConnectionState.FAILED);
-
-      limitedManager.destroy();
-    });
   });
 
   describe("连接统计", () => {

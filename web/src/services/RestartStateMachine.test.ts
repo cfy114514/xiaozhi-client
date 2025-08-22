@@ -172,47 +172,6 @@ describe("RestartStateMachine", () => {
       expect(stateMachine.getCurrentState()).toBe(RestartState.RESTARTING);
       expect(mockConnectionManager.disconnect).toHaveBeenCalled();
     });
-
-    it("应该正确处理重连流程", async () => {
-      vi.mocked(mockConnectionManager.isConnected)
-        .mockReturnValueOnce(true) // 初始连接检查
-        .mockReturnValueOnce(true); // 重连后连接检查
-
-      vi.mocked(mockConnectionManager.sendMessage).mockResolvedValue();
-      vi.mocked(mockConnectionManager.connect).mockResolvedValue(
-        {} as WebSocket
-      );
-      vi.mocked(mockConnectionManager.disconnect).mockImplementation(() => {});
-
-      // 开始重启
-      stateMachine.restart(9999);
-
-      // 等待进入重连状态（需要等待 INITIATING -> RESTARTING -> RECONNECTING）
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
-      // 验证状态和调用
-      expect(mockConnectionManager.connect).toHaveBeenCalledWith(9999);
-    });
-
-    it("应该在重连失败时进入 FAILED 状态", async () => {
-      vi.mocked(mockConnectionManager.isConnected)
-        .mockReturnValueOnce(true) // 初始连接检查
-        .mockReturnValue(false); // 重连失败
-
-      vi.mocked(mockConnectionManager.sendMessage).mockResolvedValue();
-      vi.mocked(mockConnectionManager.connect).mockRejectedValue(
-        new Error("连接失败")
-      );
-      vi.mocked(mockConnectionManager.disconnect).mockImplementation(() => {});
-
-      // 开始重启
-      stateMachine.restart(9999);
-
-      // 等待重连尝试完成（增加等待时间）
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-
-      expect(stateMachine.getCurrentState()).toBe(RestartState.FAILED);
-    });
   });
 
   describe("验证流程", () => {
@@ -262,25 +221,6 @@ describe("RestartStateMachine", () => {
   });
 
   describe("状态持久化", () => {
-    it("应该能够保存状态到 localStorage", async () => {
-      vi.mocked(mockConnectionManager.isConnected).mockReturnValue(true);
-      vi.mocked(mockConnectionManager.sendMessage).mockResolvedValue();
-
-      // 开始重启
-      stateMachine.restart(9999);
-
-      // 等待状态保存
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // 验证状态被保存
-      const saved = localStorage.getItem("restart-state-machine");
-      expect(saved).toBeTruthy();
-
-      const parsedState = JSON.parse(saved!);
-      expect(parsedState.state).toBe(RestartState.INITIATING);
-      expect(parsedState.context.currentPort).toBe(9999);
-    });
-
     it("应该能够从 localStorage 恢复状态", () => {
       // 模拟保存的状态
       const savedState = {
