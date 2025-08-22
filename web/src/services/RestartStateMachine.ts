@@ -301,6 +301,7 @@ export class RestartStateMachine {
       `[RestartStateMachine] 开始重连到端口 ${targetPort}，最大尝试次数: ${maxAttempts}`
     );
 
+    // 尝试重新连接
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       this.context.attempts = attempt;
       this.notifyListeners(); // 通知进度更新
@@ -476,7 +477,7 @@ export class RestartStateMachine {
    * 生成重启ID
    */
   private generateRestartId(): string {
-    return `restart_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `restart_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   }
 
   /**

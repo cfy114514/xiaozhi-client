@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ConnectionManager } from "../services/ConnectionManager";
+import { getConnectionManager } from "../services/ConnectionManagerSingleton";
 import { useWebSocketActions, useWebSocketStore } from "../stores/websocket";
 import type { AppConfig, ClientStatus } from "../types";
 import {
@@ -32,9 +32,9 @@ export function useWebSocket() {
   // 获取 zustand store 的 actions
   const storeActions = useWebSocketActions();
 
-  // 创建 ConnectionManager 实例
+  // 获取 ConnectionManager 单例实例
   const connectionManager = useMemo(() => {
-    return new ConnectionManager({
+    return getConnectionManager({
       connectTimeout: 10000,
       maxReconnectAttempts: 5,
       reconnectInterval: 2000,
@@ -179,6 +179,56 @@ export function useWebSocket() {
       }
     };
 
+    /**
+     * 处理重启完成事件
+     */
+    const handleRestartCompleted = async (restartData: any) => {
+      console.log("[WebSocket] 处理重启完成事件:", restartData);
+
+      try {
+        // 检查是否需要切换端口
+        const targetPort = restartData.targetPort || port;
+
+        if (targetPort !== port) {
+          console.log(`[WebSocket] 检测到端口变更: ${port} -> ${targetPort}`);
+          // 更新 URL 和端口
+          const newUrl = buildWebSocketUrl(targetPort);
+          setWsUrl(newUrl);
+          syncToStore("wsUrl", newUrl);
+        }
+
+        // 等待一小段时间确保服务完全启动
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // 如果当前未连接，尝试重新连接
+        if (!connectionManager.isConnected()) {
+          console.log("[WebSocket] 重启完成后重新连接...");
+          await connectionManager.connect(targetPort);
+
+          if (connectionManager.isConnected()) {
+            console.log("[WebSocket] 重启后重连成功");
+            setState((prev) => ({ ...prev, connected: true }));
+            syncToStore("connected", true);
+
+            // 发送初始请求
+            await connectionManager.sendMessage(
+              JSON.stringify({ type: "getConfig" })
+            );
+            await connectionManager.sendMessage(
+              JSON.stringify({ type: "getStatus" })
+            );
+
+            // 重新开始状态检查
+            startStatusCheck();
+          }
+        } else {
+          console.log("[WebSocket] 重启完成，连接已存在");
+        }
+      } catch (error) {
+        console.error("[WebSocket] 处理重启完成事件失败:", error);
+      }
+    };
+
     // 设置消息处理器
     const handleMessage = (message: any) => {
       console.log("[WebSocket] 收到消息:", message);
@@ -212,6 +262,12 @@ export function useWebSocket() {
           setState((prev) => ({ ...prev, restartStatus: message.data }));
           // 同步 restartStatus 到 store
           syncToStore("restartStatus", message.data);
+
+          // 如果重启完成，尝试重新连接
+          if (message.data?.status === "completed") {
+            console.log("[WebSocket] 检测到重启完成，准备重新连接...");
+            handleRestartCompleted(message.data);
+          }
           break;
         default:
           console.log("[WebSocket] 未处理的消息类型:", message.type);
@@ -229,7 +285,8 @@ export function useWebSocket() {
 
     return () => {
       stopStatusCheck();
-      connectionManager.destroy();
+      // 注意：不销毁 connectionManager，因为它是单例
+      // 只停止状态检查
     };
   }, [
     getWebSocketUrl,

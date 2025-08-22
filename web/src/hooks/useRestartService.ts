@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ConnectionManager } from "../services/ConnectionManager";
+import { getConnectionManager } from "../services/ConnectionManagerSingleton";
 import { HealthChecker } from "../services/HealthChecker";
 import {
   type RestartContext,
@@ -52,7 +52,7 @@ export function useRestartService(): UseRestartServiceReturn {
 
   // 创建核心服务实例
   const services = useMemo(() => {
-    const connectionManager = new ConnectionManager({
+    const connectionManager = getConnectionManager({
       connectTimeout: 10000,
       maxReconnectAttempts: 5,
       reconnectInterval: 2000,
@@ -131,7 +131,8 @@ export function useRestartService(): UseRestartServiceReturn {
   useEffect(() => {
     return () => {
       console.log("[useRestartService] 清理资源");
-      services.connectionManager.destroy();
+      // 注意：不销毁 connectionManager，因为它是单例
+      // 只清理 healthChecker
       services.healthChecker.destroy();
     };
   }, [services]);
