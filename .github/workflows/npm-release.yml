@@ -1,11 +1,13 @@
 name: NPM 发布
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
+      version:
+        description: "发布版本号 (例如: 1.0.0, 1.0.0-beta.1, patch, minor, major)"
+        required: false
+        default: ""
+        type: string
       dry_run:
         description: "预演模式（仅预览，不实际发布）"
         required: true
@@ -25,70 +27,72 @@ jobs:
       pull-requests: write
       id-token: write
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      release_created: ${{ steps.release_check.outputs.release_created }}
+      version: ${{ steps.get_release_info.outputs.version || steps.get_prerelease_info.outputs.version }}
+      release_completed: ${{ steps.release_it.outputs.release_completed }}
+      prerelease_completed: ${{ steps.prerelease_npm.outputs.prerelease_completed }}
+      is_prerelease: ${{ steps.detect_version_type.outputs.is_prerelease }}
+      version_type: ${{ steps.detect_version_type.outputs.version_type }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 检查是否为发版 commit
-        id: check_release
+      - name: 设置发版参数
+        id: setup_release
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # 检查最新 commit 消息是否符合 release: <version> 格式（可能包含PR编号）
-            COMMIT_MSG=$(git log -1 --pretty=%s)
-            echo "最新 commit 消息: $COMMIT_MSG"
+          echo "手动触发 NPM 发布"
+          echo "预演模式: ${{ github.event.inputs.dry_run }}"
+          echo "指定版本: ${{ github.event.inputs.version }}"
 
-            if [[ $COMMIT_MSG =~ ^release:\ [0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\s+\(#[0-9]+\))?.*$ ]]; then
-              echo "检测到发版 commit: $COMMIT_MSG"
-              # 提取版本号：匹配 release: 后面的版本号部分，忽略可能的PR编号和其他内容
-              VERSION=$(echo "$COMMIT_MSG" | sed -E 's/^release: ([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?).*$/\1/')
-              echo "从 commit 消息提取的版本号: $VERSION"
-              echo "commit_version=$VERSION" >> $GITHUB_OUTPUT
-              echo "is_release=true" >> $GITHUB_OUTPUT
-            else
-              echo "不是发版 commit，跳过发布"
-              echo "is_release=false" >> $GITHUB_OUTPUT
-            fi
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           else
-            # 手动触发的情况
-            echo "手动触发 NPM 发布"
-            echo "预演模式: ${{ github.event.inputs.dry_run }}"
-            echo "is_release=true" >> $GITHUB_OUTPUT
+            echo "version=" >> $GITHUB_OUTPUT
           fi
 
-      - name: 验证版本号一致性
-        if: steps.check_release.outputs.is_release == 'true' && github.event_name == 'push'
-        id: verify_version
+      - name: 检测版本类型
+        id: detect_version_type
         run: |
-          COMMIT_VERSION="${{ steps.check_release.outputs.commit_version }}"
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          VERSION="${{ steps.setup_release.outputs.version }}"
 
-          echo "Commit 消息中的版本号: $COMMIT_VERSION"
-          echo "package.json 中的版本号: $PACKAGE_VERSION"
+          # 如果没有指定版本，从 package.json 获取当前版本进行判断
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+            echo "当前 package.json 版本: $VERSION"
+          fi
 
-          if [ "$COMMIT_VERSION" = "$PACKAGE_VERSION" ]; then
-            echo "✅ 版本号验证通过"
-            echo "version_match=true" >> $GITHUB_OUTPUT
-            echo "version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
+          echo "检测版本: $VERSION"
+
+          # 检查是否为语义化版本关键词
+          if [[ "$VERSION" =~ ^(patch|minor|major|prepatch|preminor|premajor|prerelease)$ ]]; then
+            echo "📋 检测到语义化版本关键词: $VERSION"
+            if [[ "$VERSION" =~ ^pre ]]; then
+              echo "✨ 语义化预发布关键词，将执行预发布流程"
+              echo "is_prerelease=true" >> $GITHUB_OUTPUT
+              echo "version_type=prerelease" >> $GITHUB_OUTPUT
+            else
+              echo "🚀 语义化正式版本关键词，将执行正式版本流程"
+              echo "is_prerelease=false" >> $GITHUB_OUTPUT
+              echo "version_type=release" >> $GITHUB_OUTPUT
+            fi
+          # 检测是否为具体的预发布版本号（包含 -alpha, -beta, -rc 等）
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+(\.[0-9]+)?)?$ ]] && [[ "$VERSION" =~ - ]]; then
+            echo "✨ 检测到预发布版本号: $VERSION"
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "version_type=prerelease" >> $GITHUB_OUTPUT
           else
-            echo "❌ 版本号不匹配！"
-            echo "Commit 消息版本: $COMMIT_VERSION"
-            echo "package.json 版本: $PACKAGE_VERSION"
-            echo "version_match=false" >> $GITHUB_OUTPUT
-            exit 1
+            echo "🚀 检测到正式版本号: $VERSION"
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "version_type=release" >> $GITHUB_OUTPUT
           fi
 
       - name: 安装 pnpm
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
         uses: pnpm/action-setup@v4
         with:
           version: latest
 
       - name: 设置 Node.js
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
         uses: actions/setup-node@v4
         with:
           node-version-file: ".nvmrc"
@@ -96,63 +100,147 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: 安装依赖
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
         run: pnpm install --frozen-lockfile
 
+      - name: 代码格式检查
+        run: pnpm run check
+
+      - name: 拼写检查
+        run: pnpm run spell:check
+
+      - name: 代码重复率检查
+        run: pnpm run duplicate:check
+
       - name: 构建项目
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
-        run: pnpm run build
+        uses: nick-invision/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 2
+          retry_on: error
+          command: pnpm run build
 
       - name: 运行测试
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
-        run: pnpm test
-        continue-on-error: false
+        uses: nick-invision/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 2
+          retry_on: error
+          command: pnpm run test
 
-      - name: 验证已安装依赖项的来源证明和注册中心签名的完整性
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
-        run: pnpm audit signatures
+      - name: 配置 Git 用户
+        if: steps.detect_version_type.outputs.is_prerelease != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: NPM 发布
-        if: steps.check_release.outputs.is_release == 'true' && (github.event_name == 'workflow_dispatch' || steps.verify_version.outputs.version_match == 'true')
+      - name: 执行预发布版本（仅 NPM 发布）
+        if: steps.detect_version_type.outputs.is_prerelease == 'true'
+        id: prerelease_npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          echo "🚀 执行预发布版本发布（仅 NPM）"
+          echo "版本类型: ${{ steps.detect_version_type.outputs.version_type }}"
+
+          # 设置发版参数
+          RELEASE_ARGS=""
+
+          # 检查是否为预演模式
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            echo "预演模式：仅预览，不实际发布"
-            npm publish --dry-run
-          else
-            echo "开始发布到 NPM..."
-            npm publish
+            echo "🔍 预演模式：仅预览，不实际发布"
+            RELEASE_ARGS="$RELEASE_ARGS --dry-run"
           fi
 
-      - name: 获取发布版本号
-        if: success() && steps.check_release.outputs.is_release == 'true' && github.event.inputs.dry_run != 'true'
-        id: get_version
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # 从验证步骤获取版本号
-            VERSION="${{ steps.verify_version.outputs.version }}"
+          # 检查是否指定了版本号
+          if [ -n "${{ steps.setup_release.outputs.version }}" ]; then
+            VERSION="${{ steps.setup_release.outputs.version }}"
+            echo "📌 使用指定版本号: $VERSION"
+            RELEASE_ARGS="$RELEASE_ARGS $VERSION"
           else
-            # 手动触发时从 package.json 获取版本号
-            VERSION=$(node -p "require('./package.json').version")
+            echo "📈 使用自动版本号递增"
           fi
+
+          # 设置非交互模式
+          RELEASE_ARGS="$RELEASE_ARGS --ci"
+
+          echo "🚀 开始执行预发布版本 release-it..."
+          echo "参数: $RELEASE_ARGS"
+
+          # 执行 release-it（仅 NPM 发布，使用预发布配置）
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            npx release-it $RELEASE_ARGS --config .release-it.prerelease.json --npm.publish=false
+          else
+            npx release-it $RELEASE_ARGS --config .release-it.prerelease.json
+            echo "prerelease_completed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 执行正式版本发布（完整流程）
+        if: steps.detect_version_type.outputs.is_prerelease != 'true'
+        id: release_it
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          echo "🚀 执行正式版本发布（完整流程）"
+          echo "版本类型: ${{ steps.detect_version_type.outputs.version_type }}"
+
+          # 设置发版参数
+          RELEASE_ARGS=""
+
+          # 检查是否为预演模式
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "🔍 预演模式：仅预览，不实际发布"
+            RELEASE_ARGS="$RELEASE_ARGS --dry-run"
+          fi
+
+          # 检查是否指定了版本号
+          if [ -n "${{ steps.setup_release.outputs.version }}" ]; then
+            VERSION="${{ steps.setup_release.outputs.version }}"
+            echo "📌 使用指定版本号: $VERSION"
+            RELEASE_ARGS="$RELEASE_ARGS $VERSION"
+          else
+            echo "📈 使用自动版本号递增"
+          fi
+
+          # 设置非交互模式
+          RELEASE_ARGS="$RELEASE_ARGS --ci"
+
+          echo "🚀 开始执行正式版本 release-it..."
+          echo "参数: $RELEASE_ARGS"
+
+          # 执行 release-it（完整流程，使用正式版本配置）
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            npx release-it $RELEASE_ARGS --config .release-it.release.json --npm.publish=false
+          else
+            npx release-it $RELEASE_ARGS --config .release-it.release.json
+            echo "release_completed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 获取预发布版本信息
+        if: success() && github.event.inputs.dry_run != 'true' && steps.prerelease_npm.outputs.prerelease_completed == 'true'
+        id: get_prerelease_info
+        run: |
+          # 从 package.json 获取最新版本号
+          VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "NPM 发布版本: $VERSION"
+          echo "📦 预发布版本: v$VERSION"
 
-      - name: 创建 Git 标签
-        if: success() && steps.check_release.outputs.is_release == 'true' && github.event.inputs.dry_run != 'true'
-        id: release_check
+          # 输出相关链接
+          echo "🎉 预发布版本发布完成！"
+          echo "📦 NPM: https://www.npmjs.com/package/xiaozhi-client/v/$VERSION"
+          echo "ℹ️  注意：预发布版本仅发布到 NPM，未创建 Git tag 和 GitHub release"
+
+      - name: 获取正式版本信息
+        if: success() && github.event.inputs.dry_run != 'true' && steps.release_it.outputs.release_completed == 'true'
+        id: get_release_info
         run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
+          # 从 package.json 获取最新版本号
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 正式版本: v$VERSION"
 
-          # 检查标签是否已存在
-          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "标签 v$VERSION 已存在，跳过创建"
-            echo "release_created=false" >> $GITHUB_OUTPUT
-          else
-            echo "创建标签 v$VERSION"
-            git tag "v$VERSION"
-            git push origin "v$VERSION"
-            echo "release_created=true" >> $GITHUB_OUTPUT
-            echo "✅ 新版本 v$VERSION 已发布并创建标签"
-          fi
+          # 输出相关链接
+          echo "🎉 正式版本发布完成！"
+          echo "📦 NPM: https://www.npmjs.com/package/xiaozhi-client/v/$VERSION"
+          echo "🏷️ GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+          echo "📋 Changelog: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md"
